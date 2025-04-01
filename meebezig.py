@@ -1,6 +1,6 @@
 import pywikibot
 from datetime import datetime, timedelta, timezone
-import sys # Importeer de sys module
+import sys
 import schedule
 import time
 
@@ -9,9 +9,9 @@ SITE_CODE = 'nl'
 FAMILY = 'wikipedia'
 WEEK_THRESHOLD = 7
 MEEBEZIG_SJABLOON_NAAM = 'meebezig'
-OVERLEG_TEKST = """{{subst:MeebezigMelding|%s}}"""
+OVERLEG_SJABLOON = 'MeebezigVerwijdermelding' 
 VERWIJDER_BEWERKINGSTEKST = 'Bot: sjabloon {{meebezig}} langer dan een week aanwezig zonder recente bewerkingen.'
-OPERATOR = "ItsNyoty" #MELDING
+OPERATOR = "ItsNyoty"
 
 def check_meebezig_templates(edit_talk_page=False, remove_template=False, ignore_recent_edits=False):
     try:
@@ -19,12 +19,12 @@ def check_meebezig_templates(edit_talk_page=False, remove_template=False, ignore
         meebezig_sjabloon = pywikibot.Page(site, 'Sjabloon:' + MEEBEZIG_SJABLOON_NAAM)
         pywikibot.output(f"Sjabloonpagina opgehaald: {meebezig_sjabloon.title()}")
         pages = meebezig_sjabloon.getReferences(namespaces=[0])
-        pywikibot.output(f"Aantal verwijzende pagina's: {len(list(pages))}") 
+        pywikibot.output(f"Aantal verwijzende pagina's: {len(list(pages))}")
         pages = meebezig_sjabloon.getReferences(namespaces=[0])
 
         for page in pages:
             pywikibot.output(f"Verwerking pagina: {page.title()}")
-          
+
             if page.namespace() == 2:
                 pywikibot.output(f"Gebruikerspagina overgeslagen: {page.title()}")
                 continue
@@ -37,40 +37,40 @@ def check_meebezig_templates(edit_talk_page=False, remove_template=False, ignore
                     pywikibot.output(f"Sjabloon {{meebezig}} gevonden op: {page.title()}")
                     add_date = None
                     last_edit_date = None
-                    meebezig_adder = None  
+                    meebezig_adder = None
 
                     for rev in page.revisions(content=True):
                         if '{{' + MEEBEZIG_SJABLOON_NAAM + '}}' in rev.text or '{{' + MEEBEZIG_SJABLOON_NAAM.capitalize() + '}}' in rev.text:
                             timestamp_str = str(rev.timestamp)
                             if timestamp_str.endswith('Z'):
-                                timestamp_str = timestamp_str[:-1] + '+00:00'  
+                                timestamp_str = timestamp_str[:-1] + '+00:00'
                             try:
                                 add_date = datetime.fromisoformat(timestamp_str)
                             except ValueError as e:
                                 pywikibot.error(f"Kon add_date niet parsen: {timestamp_str} - {e}")
-                            meebezig_adder = rev.user  
+                            meebezig_adder = rev.user
                             pywikibot.output(f"Gebruiker die {{meebezig}} heeft toegevoegd: {meebezig_adder}")
-                            break  
+                            break
 
                     for rev in page.revisions(content=False, total=1):
                         timestamp_str = str(rev.timestamp)
                         if timestamp_str.endswith('Z'):
-                            timestamp_str = timestamp_str[:-1] + '+00:00'  
+                            timestamp_str = timestamp_str[:-1] + '+00:00'
                         try:
                             last_edit_date = datetime.fromisoformat(timestamp_str)
                         except ValueError as e:
                             pywikibot.error(f"Kon last_edit_date niet parsen: {timestamp_str} - {e}")
                         break
 
-                    if add_date and last_edit_date and meebezig_adder: 
+                    if add_date and last_edit_date and meebezig_adder:
                         now = datetime.now(timezone.utc)
                         add_date_utc = add_date.replace(tzinfo=timezone.utc)
                         last_edit_date_utc = last_edit_date.replace(tzinfo=timezone.utc)
 
                         delta = now - add_date_utc
                         time_since_last_edit = now - last_edit_date_utc
-                        
-                        if not ignore_recent_edits and time_since_last_edit < timedelta(weeks=1): 
+
+                        if not ignore_recent_edits and time_since_last_edit < timedelta(weeks=1):
                             pywikibot.output(f"Pagina {page.title()} is recent bewerkt, wordt overgeslagen.")
                             continue
 
@@ -81,9 +81,11 @@ def check_meebezig_templates(edit_talk_page=False, remove_template=False, ignore
                                 meebezig_adder_user = pywikibot.User(site, meebezig_adder)
                                 talk_page = meebezig_adder_user.getUserTalkPage()
                                 talk_text = talk_page.get()
-                                melding = OVERLEG_TEKST % (page.title(as_link=True))
+
+                                melding = f"{{{{subst:{OVERLEG_SJABLOON}|gebruiker={meebezig_adder}|datum={add_date_utc.isoformat()}|artikel={page.title(as_link=True)}}}}}"
+
                                 if melding not in talk_text:
-                                    if edit_talk_page: 
+                                    if edit_talk_page:
                                         pywikibot.output(f"Overlegpagina bewerken van {meebezig_adder}")
                                         talk_page.put(talk_text + '\n\n' + melding, f"Bot: Melding sjabloon {{meebezig}} op {page.title()}")
                                     else:
@@ -94,7 +96,7 @@ def check_meebezig_templates(edit_talk_page=False, remove_template=False, ignore
                             except Exception as e:
                                 pywikibot.error(f"Fout bij plaatsen overlegpaginabericht op {page.title()}: {e}")
 
-                            if remove_template: 
+                            if remove_template:
                                 try:
                                     new_text = text.replace('{{' + MEEBEZIG_SJABLOON_NAAM + '}}', '').replace('{{' + MEEBEZIG_SJABLOON_NAAM.capitalize() + '}}', '').strip()
                                     page.put(new_text, VERWIJDER_BEWERKINGSTEKST)
@@ -115,8 +117,8 @@ def check_meebezig_templates(edit_talk_page=False, remove_template=False, ignore
             except Exception as e:
                 pywikibot.error(f"Algemene fout bij verwerking van {page.title()}: {e}")
 
-        return True 
-    
+        return True
+
     except Exception as e:
         pywikibot.error(f"Algemene fout tijdens de run: {e}")
         return False
@@ -126,12 +128,13 @@ def send_notification(success):
     user = pywikibot.User(site, OPERATOR)
     talk_page = user.getUserTalkPage()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
+
     if success:
         return
+
     else:
         message = f"Botrun uitgevoerd op {now} is mislukt. Zie de botlog voor details. ~~~~"
-        
+
     talk_text = talk_page.get()
     notification = f"\n\n== Botrun rapport ({now}) ==\n{message}"
 
@@ -141,8 +144,8 @@ def send_notification(success):
     except Exception as e:
         pywikibot.error(f"Fout bij het plaatsen van de melding op de overlegpagina van {OPERATOR}: {e}")
 
-def meebezig(edit_talk_page=False, remove_template=False, ignore_recent_edits=False): 
-    pywikibot.config.dry = not (edit_talk_page or remove_template) 
+def meebezig(edit_talk_page=False, remove_template=False, ignore_recent_edits=False):
+    pywikibot.config.dry = not (edit_talk_page or remove_template)
     success = check_meebezig_templates(edit_talk_page, remove_template, ignore_recent_edits)
     send_notification(success)
 
@@ -165,4 +168,4 @@ if __name__ == '__main__':
         sys.exit()
 
     pywikibot.config.dry = False  # TESTMODUS FALSE=UIT TRUE=AAN
-    main() 
+    main()
