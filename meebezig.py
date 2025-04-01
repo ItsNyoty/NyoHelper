@@ -3,15 +3,21 @@ from datetime import datetime, timedelta, timezone
 import sys
 import schedule
 import time
+import re  # Importeer de re module
 
 # Configuratie
 SITE_CODE = 'nl'
 FAMILY = 'wikipedia'
-WEEK_THRESHOLD = 7
+WEEK_THRESHOLD = 1
 MEEBEZIG_SJABLOON_NAAM = 'meebezig'
-OVERLEG_SJABLOON = 'MeebezigVerwijdermelding' 
-VERWIJDER_BEWERKINGSTEKST = 'Bot: sjabloon {{meebezig}} langer dan een week aanwezig zonder recente bewerkingen.'
+OVERLEG_SJABLOON = 'MeebezigVerwijdermelding'
+VERWIJDER_BEWERKINGSTEKST = 'Bot: sjabloon {{meebezig}} langer dan een dag aanwezig zonder recente bewerkingen.'
 OPERATOR = "ItsNyoty"
+
+def template_exists(text, template_name):
+    template_name_with_space = template_name[:3] + ' ' + template_name[3:]  # "meebezig" -> "mee bezig"
+    pattern = re.compile(r'\{\{\s*(' + template_name + r'|' + template_name.capitalize().replace(' ', '') + r'|' + template_name_with_space + r'|' + template_name_with_space.capitalize() + r')\s*(\|\s*.*?)?\}\}', re.IGNORECASE)
+    return bool(pattern.search(text))
 
 def check_meebezig_templates(edit_talk_page=False, remove_template=False, ignore_recent_edits=False):
     try:
@@ -30,17 +36,19 @@ def check_meebezig_templates(edit_talk_page=False, remove_template=False, ignore
                 continue
 
             try:
+                page.purge()  # Forceer het opnieuw laden van de pagina
                 text = page.get()
                 pywikibot.output(f"Pagina inhoud opgehaald: {page.title()}")
+                # pywikibot.output(f"Volledige pagina-inhoud: {text}")  # VERWIJDER DEZE REGEL
 
-                if '{{' + MEEBEZIG_SJABLOON_NAAM + '}}' in text or '{{' + MEEBEZIG_SJABLOON_NAAM.capitalize() + '}}' in text:
+                if template_exists(text, MEEBEZIG_SJABLOON_NAAM):
                     pywikibot.output(f"Sjabloon {{meebezig}} gevonden op: {page.title()}")
                     add_date = None
                     last_edit_date = None
                     meebezig_adder = None
 
                     for rev in page.revisions(content=True):
-                        if '{{' + MEEBEZIG_SJABLOON_NAAM + '}}' in rev.text or '{{' + MEEBEZIG_SJABLOON_NAAM.capitalize() + '}}' in rev.text:
+                        if template_exists(rev.text, MEEBEZIG_SJABLOON_NAAM):
                             timestamp_str = str(rev.timestamp)
                             if timestamp_str.endswith('Z'):
                                 timestamp_str = timestamp_str[:-1] + '+00:00'
@@ -70,18 +78,21 @@ def check_meebezig_templates(edit_talk_page=False, remove_template=False, ignore
                         delta = now - add_date_utc
                         time_since_last_edit = now - last_edit_date_utc
 
-                        if not ignore_recent_edits and time_since_last_edit < timedelta(weeks=1):
-                            pywikibot.output(f"Pagina {page.title()} is recent bewerkt, wordt overgeslagen.")
-                            continue
-
+                        # Controleer eerst of het sjabloon oud genoeg is
                         if delta.days >= WEEK_THRESHOLD:
                             pywikibot.output(f"Sjabloon {{meebezig}} langer dan {WEEK_THRESHOLD} dagen op: {page.title()} (toegevoegd op {add_date_utc.strftime('%Y-%m-%d')}) door {meebezig_adder}")
+
+                            # Controleer dan of de PAGINA recent bewerkt is
+                            if not ignore_recent_edits and time_since_last_edit < timedelta(days=1):
+                                pywikibot.output(f"Pagina {page.title()} is recent bewerkt, wordt overgeslagen.")
+                                continue  # Sla de pagina over
 
                             try:
                                 meebezig_adder_user = pywikibot.User(site, meebezig_adder)
                                 talk_page = meebezig_adder_user.getUserTalkPage()
                                 talk_text = talk_page.get()
 
+                                # Gebruik het nieuwe sjabloon
                                 melding = f"{{{{subst:{OVERLEG_SJABLOON}|gebruiker={meebezig_adder}|datum={add_date_utc.isoformat()}|artikel={page.title(as_link=True)}}}}}"
 
                                 if melding not in talk_text:
@@ -90,7 +101,8 @@ def check_meebezig_templates(edit_talk_page=False, remove_template=False, ignore
                                         talk_page.put(talk_text + '\n\n' + melding, f"Bot: Melding sjabloon {{meebezig}} op {page.title()}")
                                     else:
                                         pywikibot.output(f"Simuleer: Overlegpagina bewerken van {meebezig_adder}")
-                                    pywikibot.output(f"Melding geplaatst op overlegpagina van {meebezig_adder}")
+                                        pywikibot.output(f"Melding geplaatst op overlegpagina van {meebezig_adder}")
+                                    pywikibot.output(f"Melding al aanwezig op overlegpagina van {meebezig_adder}")
                                 else:
                                     pywikibot.output(f"Melding al aanwezig op overlegpagina van {meebezig_adder}")
                             except Exception as e:
@@ -98,7 +110,11 @@ def check_meebezig_templates(edit_talk_page=False, remove_template=False, ignore
 
                             if remove_template:
                                 try:
-                                    new_text = text.replace('{{' + MEEBEZIG_SJABLOON_NAAM + '}}', '').replace('{{' + MEEBEZIG_SJABLOON_NAAM.capitalize() + '}}', '').strip()
+                                    # Verwijder alle varianten van het sjabloon
+                                    template_name_with_space = MEEBEZIG_SJABLOON_NAAM[:3] + ' ' + MEEBEZIG_SJABLOON_NAAM[3:]  # "meebezig" -> "mee bezig"
+                                    pattern = r'\{\{\s*(' + MEEBEZIG_SJABLOON_NAAM + r'|' + MEEBEZIG_SJABLOON_NAAM.capitalize() + r'|' + template_name_with_space + r'|' + template_name_with_space.capitalize() + r')\s*(\|\s*.*?)?\}\}'
+                                    new_text = re.sub(pattern, '', text, flags=re.IGNORECASE).strip()
+
                                     page.put(new_text, VERWIJDER_BEWERKINGSTEKST)
                                     pywikibot.output(f"Sjabloon {{meebezig}} verwijderd van: {page.title()}")
                                 except Exception as e:
@@ -106,7 +122,7 @@ def check_meebezig_templates(edit_talk_page=False, remove_template=False, ignore
                             else:
                                 pywikibot.output(f"Simuleer: Sjabloon {{meebezig}} verwijderen van: {page.title()}")
                         else:
-                            pywikibot.output(f"Datum van toevoegen van {{meebezig}} niet gevonden op: {page.title()}")
+                            pywikibot.output(f"Sjabloon {{meebezig}} is niet langer dan {WEEK_THRESHOLD} dagen oud op: {page.title()}")
                 else:
                     pywikibot.output(f"Sjabloon {{meebezig}} niet (meer) gevonden op: {page.title()}")
 
@@ -144,7 +160,7 @@ def send_notification(success):
     except Exception as e:
         pywikibot.error(f"Fout bij het plaatsen van de melding op de overlegpagina van {OPERATOR}: {e}")
 
-def meebezig(edit_talk_page=False, remove_template=False, ignore_recent_edits=False):
+def meebezig(edit_talk_page=True, remove_template=True, ignore_recent_edits=False):
     pywikibot.config.dry = not (edit_talk_page or remove_template)
     success = check_meebezig_templates(edit_talk_page, remove_template, ignore_recent_edits)
     send_notification(success)
