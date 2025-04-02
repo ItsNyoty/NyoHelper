@@ -3,19 +3,19 @@ from datetime import datetime, timedelta, timezone
 import sys
 import schedule
 import time
-import re  # Importeer de re module
+import re
 
 # Configuratie
 SITE_CODE = 'nl'
 FAMILY = 'wikipedia'
-WEEK_THRESHOLD = 1
+WEEK_THRESHOLD = 3
 MEEBEZIG_SJABLOON_NAAM = 'meebezig'
 OVERLEG_SJABLOON = 'MeebezigVerwijdermelding'
 VERWIJDER_BEWERKINGSTEKST = 'Bot: sjabloon {{meebezig}} langer dan een dag aanwezig zonder recente bewerkingen.'
 OPERATOR = "ItsNyoty"
 
 def template_exists(text, template_name):
-    template_name_with_space = template_name[:3] + ' ' + template_name[3:]  # "meebezig" -> "mee bezig"
+    template_name_with_space = template_name[:3] + ' ' + template_name[3:]  
     pattern = re.compile(r'\{\{\s*(' + template_name + r'|' + template_name.capitalize().replace(' ', '') + r'|' + template_name_with_space + r'|' + template_name_with_space.capitalize() + r')\s*(\|\s*.*?)?\}\}', re.IGNORECASE)
     return bool(pattern.search(text))
 
@@ -36,10 +36,9 @@ def check_meebezig_templates(edit_talk_page=False, remove_template=False, ignore
                 continue
 
             try:
-                page.purge()  # Forceer het opnieuw laden van de pagina
+                page.purge()  
                 text = page.get()
                 pywikibot.output(f"Pagina inhoud opgehaald: {page.title()}")
-                # pywikibot.output(f"Volledige pagina-inhoud: {text}")  # VERWIJDER DEZE REGEL
 
                 if template_exists(text, MEEBEZIG_SJABLOON_NAAM):
                     pywikibot.output(f"Sjabloon {{meebezig}} gevonden op: {page.title()}")
@@ -78,21 +77,18 @@ def check_meebezig_templates(edit_talk_page=False, remove_template=False, ignore
                         delta = now - add_date_utc
                         time_since_last_edit = now - last_edit_date_utc
 
-                        # Controleer eerst of het sjabloon oud genoeg is
                         if delta.days >= WEEK_THRESHOLD:
                             pywikibot.output(f"Sjabloon {{meebezig}} langer dan {WEEK_THRESHOLD} dagen op: {page.title()} (toegevoegd op {add_date_utc.strftime('%Y-%m-%d')}) door {meebezig_adder}")
 
-                            # Controleer dan of de PAGINA recent bewerkt is
-                            if not ignore_recent_edits and time_since_last_edit < timedelta(days=1):
+                            if not ignore_recent_edits and time_since_last_edit < timedelta(days=3):
                                 pywikibot.output(f"Pagina {page.title()} is recent bewerkt, wordt overgeslagen.")
-                                continue  # Sla de pagina over
+                                continue  
 
                             try:
                                 meebezig_adder_user = pywikibot.User(site, meebezig_adder)
                                 talk_page = meebezig_adder_user.getUserTalkPage()
                                 talk_text = talk_page.get()
 
-                                # Gebruik het nieuwe sjabloon
                                 melding = f"{{{{subst:{OVERLEG_SJABLOON}|gebruiker={meebezig_adder}|datum={add_date_utc.isoformat()}|artikel={page.title(as_link=True)}}}}}"
 
                                 if melding not in talk_text:
@@ -110,7 +106,6 @@ def check_meebezig_templates(edit_talk_page=False, remove_template=False, ignore
 
                             if remove_template:
                                 try:
-                                    # Verwijder alle varianten van het sjabloon
                                     template_name_with_space = MEEBEZIG_SJABLOON_NAAM[:3] + ' ' + MEEBEZIG_SJABLOON_NAAM[3:]  # "meebezig" -> "mee bezig"
                                     pattern = r'\{\{\s*(' + MEEBEZIG_SJABLOON_NAAM + r'|' + MEEBEZIG_SJABLOON_NAAM.capitalize() + r'|' + template_name_with_space + r'|' + template_name_with_space.capitalize() + r')\s*(\|\s*.*?)?\}\}'
                                     new_text = re.sub(pattern, '', text, flags=re.IGNORECASE).strip()
