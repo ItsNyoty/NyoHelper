@@ -1,9 +1,8 @@
 mylang = 'nl'
 family = 'wikipedia'
+
+usernames = {}  
+usernames['wikipedia'] = {} 
 usernames['wikipedia']['nl'] = "Nyo's Helper"
 
-passwords = {
-    "wikipedia": {
-        "nl": input("Voer het botwachtwoord in voor de Nederlandstalige Wikipedia: ")
-    }
-}
+password_file = 'password.txt'
