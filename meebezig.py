@@ -4,7 +4,6 @@ import sys
 import schedule
 import time
 import re
-from collections import defaultdict
 
 # Configuratie
 SITE_CODE = 'nl'
@@ -15,9 +14,9 @@ OVERLEG_SJABLOON = 'MeebezigHerinnering'
 OPERATOR = "ItsNyoty"
 LOG_PAGE_TITLE = 'Gebruiker:Nyo\'s Helper/Meebezig/Logboek'
 
-# Tabel-headers voor de logpagina (zoals gevraagd)
+# Tabel-headers voor de logpagina
 LOG_PAGE_HEADER = """{| class="wikitable sortable"
-|+ Overzicht van <nowiki>{{meebezig}}</nowiki>-sjabloon gebruik
+|+ Overzicht van <nowiki>{{meebezig}}</nowiki>-sjabloon gebruik. Afgehandelde items worden automatisch opgeruimd.
 ! Paginatitel
 ! Plaatser sjabloon
 ! Tijd van plaatsing
@@ -27,329 +26,200 @@ LOG_PAGE_HEADER = """{| class="wikitable sortable"
 """
 LOG_PAGE_FOOTER = "|}"
 
-
 def template_exists(text, template_name):
-    """
-    Checks if a template with the given name exists in the text.
-    Handles case-insensitivity and variations with spaces.
-    """
-    template_name_with_space = template_name[:3] + ' ' + template_name[3:]
-    pattern = re.compile(r'\{\{\s*(' + template_name + r'|' + template_name.capitalize().replace(' ', '') + r'|' + template_name_with_space + r'|' + template_name_with_space.capitalize() + r')\s*(\|\s*.*?)?\}\}', re.IGNORECASE)
+    """Checks if a template with the given name exists in the text."""
+    variations = [template_name.replace(' ', ''), template_name.capitalize().replace(' ', ''), template_name]
+    pattern_str = r'\{\{\s*(' + r'|'.join(re.escape(name) for name in variations) + r')\s*(\|\s*.*?)?\}\}'
+    pattern = re.compile(pattern_str, re.IGNORECASE)
     return bool(pattern.search(text))
 
-def check_meebezig_templates(edit_talk_page=False):
-    """
-    Checks pages using the "meebezig" template and notifies the user if it's been there for a week.
-    """
-    pywikibot.output("check_meebezig_templates() gestart")  # DEBUG
-
+def parse_iso_date(date_str: str | datetime) -> datetime | None:
+    if not date_str or isinstance(date_str, datetime): return date_str
     try:
-        site = pywikibot.Site(SITE_CODE, FAMILY)
-        pywikibot.output("Aanmelden...")
-        site.login()
-        pywikibot.output("Aanmelden voltooid.")
-        meebezig_sjabloon = pywikibot.Page(site, 'Sjabloon:' + MEEBEZIG_SJABLOON_NAAM)
-        pywikibot.output(f"Sjabloonpagina opgehaald: {meebezig_sjabloon.title()}")
+        if date_str.endswith('Z'): date_str = date_str[:-1] + '+00:00'
+        dt = datetime.fromisoformat(date_str)
+        if dt.tzinfo is None: return dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, TypeError): return None
 
-        bot_username = site.username()
-
-        log_page = pywikibot.Page(site, LOG_PAGE_TITLE)
-        try:
-            log_text = log_page.get()
-            log_data = parse_log_page(log_text)
-            pywikibot.output(f"{len(log_data)} items geparsed uit logboek.")
-        except pywikibot.exceptions.NoPageError:
-            pywikibot.output(f"Logpagina {LOG_PAGE_TITLE} bestaat niet, wordt aangemaakt.")
-            log_text = ""
-            log_data = {}
-        except Exception as e:
-            pywikibot.error(f"Fout bij parsen logpagina (kan tabel-format zijn): {e}. Log wordt gereset.")
-            log_text = "" # Reset bij parse-fout
-            log_data = {}
-
-
-        pages = meebezig_sjabloon.getReferences(namespaces=[0])
-        pages = list(pages)
-        pywikibot.output(f"Aantal verwijzende pagina's: {len(pages)}")
-
-        for page in pages:
-            pywikibot.output(f"Verwerking pagina: {page.title()}")
-
-            if page.namespace() == 2:
-                pywikibot.output(f"Gebruikerspagina overgeslagen: {page.title()}")
-                continue
-
-            try:
-                page.purge()
-                text = page.get()
-                pywikibot.output(f"Pagina inhoud opgehaald: {page.title()}")
-
-                if template_exists(text, MEEBEZIG_SJABLOON_NAAM):
-                    page_title = page.title()
-                    add_date = None
-                    meebezig_adder = None
-
-                    for rev in page.revisions(content=True):
-                        if template_exists(rev.text, MEEBEZIG_SJABLOON_NAAM):
-                            timestamp_str = str(rev.timestamp)
-                            if timestamp_str.endswith('Z'):
-                                timestamp_str = timestamp_str[:-1] + '+00:00'
-                            try:
-                                add_date = datetime.fromisoformat(timestamp_str)
-                            except ValueError as e:
-                                pywikibot.error(f"Kon add_date niet parsen: {timestamp_str} - {e}")
-                            meebezig_adder = rev.user
-                            pywikibot.output(f"Gebruiker die {{meebezig}} heeft toegevoegd: {meebezig_adder}")
-                            break
-
-                    if add_date and meebezig_adder:
-                        now = datetime.now(timezone.utc)
-                        add_date_utc = add_date.replace(tzinfo=timezone.utc)
-                        delta = now - add_date_utc
-
-                        if delta.days >= WEEK_THRESHOLD:
-                            try:
-                                meebezig_adder_user = pywikibot.User(site, meebezig_adder)
-                                talk_page = meebezig_adder_user.getUserTalkPage()
-                                talk_text = ""
-
-                                # Voorkom cache: purge de overlegpagina voordat we de inhoud ophalen
-                                try:
-                                    talk_page.purge()
-                                    talk_text = talk_page.get()
-                                except pywikibot.exceptions.NoPageError:
-                                    talk_text = "" # Pagina bestaat nog niet, dat is prima
-                                except Exception as e:
-                                    pywikibot.error(f"Kon overlegpagina {talk_page.title()} niet ophalen/purgen: {e}")
-                                    continue # Ga naar de volgende pagina
-
-                                # Compileer regex om {{Bots|...}} te vinden
-                                deny_pattern = re.compile(r'\{\{\s*(?:Bots|Bot|NoBots)\s*\|[^}]*deny\s*=\s*([^}]*)\}\}', re.IGNORECASE)
-                                is_denied = False
-                                for match in deny_pattern.finditer(talk_text):
-                                    denied_list_str = match.group(1).lower()
-                                    denied_list = [b.strip() for b in denied_list_str.split(',')]
-                                    if 'all' in denied_list or bot_username.lower() in denied_list:
-                                        is_denied = True
-                                        break
-                                
-                                if is_denied:
-                                    pywikibot.output(f"Bot is uitgesloten op overlegpagina van {meebezig_adder}. Melding wordt overgeslagen.")
-                                else:
-                                    melding = f"{{{{subst:{OVERLEG_SJABLOON}|artikel={page.title(as_link=True)}}}}}"
-                                    
-                                    check_string = page.title(as_link=True)
-                                    
-                                    if check_string not in talk_text:
-                                        if edit_talk_page:
-                                            pywikibot.output(f"Overlegpagina bewerken van {meebezig_adder} voor {check_string}")
-                                            talk_page.put(talk_text + '\n\n' + melding, f"Bot: Herinnering sjabloon {{meebezig}} op {page.title()}")
-                                        else:
-                                            pywikibot.output(f"Simuleer: Overlegpagina bewerken van {meebezig_adder}")
-                                            pywikibot.output(f"Melding geplaatst op overlegpagina van {meebezig_adder}")
-                                    else:
-                                        pywikibot.output(f"Herinnering voor {check_string} al aanwezig op overlegpagina van {meebezig_adder}")
-                            
-                            except Exception as e:
-                                pywikibot.error(f"Fout bij plaatsen overlegpaginabericht op {page.title()}: {e}")
-                        
-                        if page_title not in log_data:
-                            pywikibot.output(f"Nieuwe {{meebezig}} op {page_title}")
-
-                            log_data[page_title] = {
-                                'added_by': meebezig_adder,
-                                'added_at': add_date.isoformat(),
-                                'removed_by': None,
-                                'removed_at': None
-                            }
-                        else:
-                            pywikibot.output(f"{{meebezig}} op {page_title} al bekend.")
-
-            except pywikibot.exceptions.IsRedirectPageError:
-                pywikibot.output(f"{page.title()} is een redirect, wordt overgeslagen.")
-            except pywikibot.exceptions.NoPageError:
-                pywikibot.output(f"Pagina niet gevonden: {page.title()}")
-            except Exception as e:
-                pywikibot.error(f"Algemene fout bij verwerking van {page.title()}: {e}")
-
-        pywikibot.output("Start tweede pas")
-
-        pages_in_log = list(log_data.keys())
-
-        for page_title in pages_in_log:
-            pywikibot.output(f"Controleren van {page_title} op verwijdering")
-            try:
-                page = pywikibot.Page(site, page_title)
-                page.purge()
-                text = page.get()
-
-                if not template_exists(text, MEEBEZIG_SJABLOON_NAAM):
-                    if log_data[page_title]['removed_by'] is None:
-                        pywikibot.output(f"{{meebezig}} is verwijderd van {page_title}")
-
-                        remover = None
-                        remove_date = None
-
-                        for rev in page.revisions(content=False, total=2):
-                            remover = rev.user
-                            remove_timestamp_str = str(rev.timestamp)
-                            if remove_timestamp_str.endswith('Z'):
-                                remove_timestamp_str = remove_timestamp_str[:-1] + '+00:00'
-                            try:
-                                remove_date = datetime.fromisoformat(remove_timestamp_str)
-                            except ValueError as e:
-                                pywikibot.error(f"Kon remove_date niet parsen: {remove_timestamp_str} - {e}")
-                            break
-
-                        if remove_date is None:
-                            remove_date = datetime.now(timezone.utc)
-
-                        log_data[page_title]['removed_by'] = remover
-                        log_data[page_title]['removed_at'] = remove_date.isoformat()
-
-                    else:
-                        pywikibot.output(f"{{meebezig}} verwijdering van {page_title} al bekend.")
-
-                else:
-                     pywikibot.output(f"{{meebezig}} nog steeds aanwezig op {page_title}")
-
-            except pywikibot.exceptions.NoPageError:
-                 pywikibot.output(f"Pagina {page_title} niet gevonden (mogelijk verwijderd).  Verwijderen uit de log.")
-                 if page_title in log_data:
-                    del log_data[page_title]
-            except Exception as e:
-                pywikibot.error(f"Fout bij controleren van {page_title}: {e}")
-                continue
-
-        new_log_text = format_log_page(log_data)
-        
-        if new_log_text.strip() != log_text.strip():
-            pywikibot.output("Logpagina wordt bijgewerkt.")
-            try:
-                log_page.put(new_log_text, "Bot: Bijwerken overzicht van {{meebezig}}-sjabloon gebruik (tabel-format).")
-                log_updated = True
-            except Exception as e:
-                pywikibot.error(f"Fout bij schrijven naar logpagina: {e}")
-                log_updated = False
-        else:
-            pywikibot.output("Geen wijzigingen in de logpagina.")
-            log_updated = False
-
-        pywikibot.output("check_meebezig_templates() voltooid")  # DEBUG
-        return log_updated
-
+def find_template_adder(page: pywikibot.Page, template_name: str) -> tuple[str | None, datetime | None]:
+    """Finds the user and timestamp for the most recent addition of a template."""
+    pywikibot.output(f"Nieuwe pagina: analyse van historie voor {page.title()}...")
+    try:
+        revisions = list(page.revisions(content=True))
+        for i, current_rev in enumerate(revisions):
+            current_has_template = template_exists(current_rev.text, template_name)
+            parent_has_template = False
+            if i + 1 < len(revisions):
+                parent_rev = revisions[i + 1]
+                parent_has_template = template_exists(parent_rev.text, template_name)
+            
+            if current_has_template and not parent_has_template:
+                adder_user = current_rev.user
+                add_timestamp = parse_iso_date(str(current_rev.timestamp))
+                pywikibot.output(f"Plaatser gevonden: '{adder_user}' op {add_timestamp}")
+                return adder_user, add_timestamp
     except Exception as e:
-        pywikibot.error(f"Algemene fout tijdens de run: {e}")
-        pywikibot.output("check_meebezig_templates() afgebroken met fout")  # DEBUG
-        return False
+        pywikibot.error(f"Fout bij het analyseren van de historie van {page.title()}: {e}")
+    return None, None
+
+def check_meebezig_templates(edit_talk_page=False):
+    pywikibot.output("check_meebezig_templates() gestart met herstelde logica")
+    site = pywikibot.Site(SITE_CODE, FAMILY)
+    site.login()
+    bot_username = site.username() 
+    
+    log_page = pywikibot.Page(site, LOG_PAGE_TITLE)
+    try:
+        original_log_text = log_page.get()
+        log_data = parse_log_page(original_log_text)
+    except pywikibot.exceptions.NoPageError:
+        original_log_text, log_data = "", {}
+
+    meebezig_sjabloon = pywikibot.Page(site, 'Sjabloon:' + MEEBEZIG_SJABLOON_NAAM)
+    current_pages_with_template = {p.title() for p in meebezig_sjabloon.getReferences(namespaces=[0])}
+
+    pages_to_remove_from_log = []
+
+    for page_title, data in list(log_data.items()):
+        if page_title not in current_pages_with_template:
+            if data.get('removed_by'):
+                pywikibot.output(f"'{page_title}' is al afgehandeld, wordt opgeruimd.")
+                pages_to_remove_from_log.append(page_title)
+            else:
+                pywikibot.output(f"Sjabloon is nieuw verwijderd van '{page_title}', wordt gelogd.")
+                try:
+                    page = pywikibot.Page(site, page_title)
+                    last_rev = page.latest_revision
+                    log_data[page_title]['removed_by'] = last_rev.user
+                    log_data[page_title]['removed_at'] = parse_iso_date(str(last_rev.timestamp))
+                except pywikibot.exceptions.NoPageError:
+                    log_data[page_title]['removed_by'] = "Pagina verwijderd"
+                    log_data[page_title]['removed_at'] = datetime.now(timezone.utc)
+        else:
+            add_date = parse_iso_date(data['added_at'])
+            if add_date and (datetime.now(timezone.utc) - add_date).days >= WEEK_THRESHOLD:
+                pywikibot.output(f"'{page_title}' staat al >{WEEK_THRESHOLD} dagen, herinnering wordt overwogen.")
+                adder = data['added_by']
+                try:
+                    talk_page = pywikibot.User(site, adder).getUserTalkPage()
+                    talk_text = talk_page.get(force=True) if talk_page.exists() else ""
+
+                    deny_pattern = re.compile(r'\{\{\s*(?:Bots|Bot|NoBots)\s*\|[^}]*deny\s*=\s*([^}]*)\}\}', re.IGNORECASE)
+                    is_denied = False
+                    for match in deny_pattern.finditer(talk_text):
+                        denied_list_str = match.group(1).lower()
+                        denied_list = [b.strip() for b in denied_list_str.split(',')]
+                        if 'all' in denied_list or bot_username.lower() in denied_list:
+                            is_denied = True
+                            break
+                    
+                    if is_denied:
+                        pywikibot.output(f"Bot is uitgesloten op overlegpagina van {adder}. Melding wordt overgeslagen.")
+                        continue 
+
+                    melding = f"{{{{subst:{OVERLEG_SJABLOON}|artikel={page_title}}}}}"
+                    check_string = f"[[{page_title}]]" 
+                    
+                    if check_string not in talk_text:
+                        if edit_talk_page:
+                            summary = f"Bot: Herinnering sjabloon {{meebezig}} op [[{page_title}]]"
+                            talk_page.put(talk_text + '\n\n' + melding, summary)
+                            pywikibot.output(f"Bericht geplaatst op OP van {adder}")
+                        else:
+                            pywikibot.output(f"DRY RUN: Bericht zou worden geplaatst op OP van {adder}")
+                    else:
+                        pywikibot.output(f"Herinnering voor {page_title} al aanwezig op OP van {adder}")
+
+                except Exception as e:
+                    pywikibot.error(f"Fout bij verwerken herinnering voor {page_title}: {e}")
+
+    for page_title in pages_to_remove_from_log:
+        if page_title in log_data:
+            del log_data[page_title]
+
+    for page_title in current_pages_with_template:
+        if page_title not in log_data:
+            page = pywikibot.Page(site, page_title)
+            adder, add_date = find_template_adder(page, MEEBEZIG_SJABLOON_NAAM)
+            if adder and add_date:
+                log_data[page_title] = {
+                    'added_by': adder, 'added_at': add_date,
+                    'removed_by': None, 'removed_at': None
+                }
+
+    new_log_text = format_log_page(log_data)
+    if new_log_text.strip() != original_log_text.strip():
+        pywikibot.output("Logpagina wordt bijgewerkt.")
+        log_page.put(new_log_text, "Bot: Bijwerken overzicht (nieuwe/verwijderde sjablonen en opruimen).")
+    else:
+        pywikibot.output("Geen wijzigingen in de logpagina.")
+
+    pywikibot.output("check_meebezig_templates() voltooid.")
 
 def parse_log_page(log_text):
-    """
-    Parses the log page wikitext table into a dictionary.
-    """
     log_data = {}
-    lines = log_text.splitlines()
-    
-    # Regex om een tabelrij te matchen
-    # | [[Artikelnaam]] || Gebruiker || 2024-01-01T... || Gebruiker2 || 2024-01-02T...
-    # Maakt || optioneel voor flexibiliteit
-    row_regex = re.compile(r'\|\s*\[\[(.*?)]]\s*\|\|?\s*(.*?)\s*\|\|?\s*(.*?)\s*\|\|?\s*(.*?)\s*\|\|?\s*(.*?)\s*')
-
-    for line in lines:
-        if not line.startswith('| '):
-            continue # Sla headers, comments, etc. over (alles wat niet met '| ' begint)
-
+    row_regex = re.compile(r'\|\s*\[\[(.*?)]]\s*\|\|\s*(.*?)\s*\|\|\s*(.*?)\s*\|\|\s*(.*?)\s*\|\|\s*(.*?)')
+    for line in log_text.splitlines():
+        if not line.startswith('| [['): continue
         match = row_regex.match(line)
         if match:
             try:
-                page_title = match.group(1).strip()
-                added_by = match.group(2).strip()
-                added_at = match.group(3).strip()
-                removed_by = match.group(4).strip()
-                removed_at = match.group(5).strip()
-
+                page_title, added_by, added_at, removed_by, removed_at = [m.strip() for m in match.groups()]
+                removed_at = removed_at.removesuffix('|-').strip()
                 log_data[page_title] = {
-                    'added_by': added_by,
-                    'added_at': added_at,
+                    'added_by': added_by, 'added_at': parse_iso_date(added_at),
                     'removed_by': removed_by if removed_by.lower() != 'n.v.t.' else None,
-                    'removed_at': removed_at if removed_at.lower() != 'n.v.t.' else None
+                    'removed_at': parse_iso_date(removed_at)
                 }
             except Exception as e:
-                pywikibot.error(f"Fout bij parsen van tabelrij: {line} - {e}")
-                continue
-                
+                pywikibot.error(f"Fout bij parsen van tabelrij: '{line}' - {e}")
     return log_data
 
 def format_log_page(log_data):
-    """
-    Formats the log data into the log page wikitext table.
-    """
     lines = [LOG_PAGE_HEADER]
+    sorted_items = sorted(log_data.items(), key=lambda i: i[1].get('added_at') or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     
-    sorted_page_titles = sorted(log_data.keys())
-    
-    for page_title in sorted_page_titles:
-        data = log_data[page_title]
-        added_by = data['added_by']
-        added_at = data['added_at']
-        removed_by = data['removed_by'] if data['removed_by'] else 'N.v.t.'
-        removed_at = data['removed_at'] if data['removed_at'] else 'N.v.t.'
-
-        # Maak de tabelrij
-        # | [[Paginatitel]] || Plaatser || Tijd || Verwijderaar || Tijd
-        lines.append(f"| [[{page_title}]] || {added_by} || {added_at} || {removed_by} || {removed_at}")
-        lines.append("|-") 
-
-    if len(lines) > 1 and lines[-1] == "|-":
-        lines.pop()
+    for page_title, data in sorted_items:
+        added_at_iso = data['added_at'].isoformat() if data.get('added_at') else 'N.v.t.'
+        removed_at_iso = data['removed_at'].isoformat() if data.get('removed_at') else 'N.v.t.'
         
+        lines.append(f"| [[{page_title}]] || {data.get('added_by') or 'Onbekend'} || {added_at_iso} || {data.get('removed_by') or 'N.v.t.'} || {removed_at_iso}")
+        lines.append("|-")
+
+    if lines and lines[-1] == "|-": lines.pop()
     lines.append(LOG_PAGE_FOOTER)
     return "\n".join(lines)
 
 
 def meebezig(edit_talk_page=False):
-    """
-    Main function to run the meebezig bot.
-    """
-    pywikibot.output("meebezig() gestart")  # DEBUG
-    pywikibot.config.dry = not (edit_talk_page)
+    pywikibot.output("meebezig() gestart")
+    pywikibot.config.dry = not edit_talk_page
     try:
-        log_updated = check_meebezig_templates(edit_talk_page)
-        pywikibot.output(f"meebezig() voltooid, log_updated: {log_updated}")  # DEBUG
-        return log_updated
+        check_meebezig_templates(edit_talk_page)
+        pywikibot.output("meebezig() voltooid")
     except Exception as e:
         pywikibot.error(f"Fout in meebezig(): {e}")
-        pywikibot.output("meebezig() afgebroken met fout")  # DEBUG
-        return False
-
 
 def main():
-    """
-    Main entry point of the script.
-    """
-
-    def run_meebezig():
+    def run_job():
         meebezig(edit_talk_page=True)
-
-    pywikibot.output("Scheduler wordt geinitialiseerd...")
-
-    schedule.every(30).seconds.do(run_meebezig)
-
-    pywikibot.output("Eerste run van meebezig")
-    meebezig(edit_talk_page=True)
-
+    
+    pywikibot.output("Scheduler geïnitialiseerd...")
+    schedule.every(1).hour.do(run_job)
+    pywikibot.output("Eerste run bij opstarten.")
+    run_job()
+    
     while True:
         schedule.run_pending()
-        time.sleep(1)
+        time.sleep(60)
 
 if __name__ == '__main__':
     try:
         site = pywikibot.Site(SITE_CODE, FAMILY)
-        user = pywikibot.User(site, OPERATOR)
-        pywikibot.output(f"Bot draait als: {user.username()}")
+        pywikibot.output(f"Bot draait als: {site.username()}")
     except Exception as e:
-        pywikibot.error(f"Configuratie fout: {e}.  Zorg ervoor dat user-config.py correct is ingesteld.")
+        pywikibot.error(f"Configuratie fout: {e}. Zorg voor user-config.py.")
         sys.exit()
 
-    # pywikibot.config.dry = False 
     main()
